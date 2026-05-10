@@ -150,6 +150,12 @@ def code_error_rulebased(result: Dict, answer_type: str) -> str:
     if answer_type == "numeric" and _has_arithmetic_error(result):
         return "E1"
 
+    # Public GSM-IC mirrors do not always expose the irrelevant span separately.
+    # After ruling out parse errors and explicit arithmetic slips, keep failed
+    # GSM-IC examples in the distractor-capture bucket.
+    if dataset == "gsm_ic":
+        return "E2"
+
     # E4 Step skipping
     if _has_step_skip(result):
         return "E4"

@@ -294,6 +294,27 @@ def full_metrics_report(
     Keys: 'accuracy', 'recovery', 'robustness', 'error_dist'
     """
     from src.config import DATASETS
+    from src.taxonomy import code_batch
+
+    # Some checkpoints may contain raw results without error labels, especially
+    # non-S0 strategies. Label them before recovery/error-distribution metrics
+    # so Fig. 4 and Fig. 6 are not silently computed on empty distributions.
+    for model_key in model_keys:
+        for strat in strategy_keys:
+            for dataset_key in dataset_keys:
+                results = (all_results
+                           .get(model_key, {})
+                           .get(strat, {})
+                           .get(dataset_key, []))
+                if not results:
+                    continue
+                needs_labels = any(
+                    (not r.get("correct")) and r.get("error_class") is None
+                    for r in results
+                )
+                if needs_labels:
+                    answer_type = DATASETS.get(dataset_key, {}).get("answer_type", "numeric")
+                    code_batch(results, answer_type)
 
     logger.info("Computing accuracy table...")
     acc_df = accuracy_table(all_results, model_keys, strategy_keys,

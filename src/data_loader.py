@@ -62,6 +62,15 @@ def extract_model_answer(raw: str, answer_type: str) -> Optional[str]:
     """
     raw = raw.strip()
     if answer_type == "numeric":
+        # GSM-Plus includes unanswerable/critical-thinking perturbations whose
+        # gold answer is "None". Treat explicit non-answer statements as a
+        # scorable prediction rather than as a parse failure.
+        if re.search(
+            r"\b(answer is\s+)?(none|unknown|cannot be determined|not enough information)\b",
+            raw,
+            re.IGNORECASE,
+        ):
+            return "None"
         # Look for explicit "answer is X" pattern first
         m = re.search(r"(?:answer is|=)\s*([\-]?\d[\d,\.]*)", raw, re.IGNORECASE)
         if m:
@@ -90,12 +99,21 @@ def extract_model_answer(raw: str, answer_type: str) -> Optional[str]:
         m = re.match(r"^([A-E])[\.\:\s]", last_line.strip())
         if m:
             return m.group(1)
+        m = re.match(r"^([A-E])$", last_line.strip())
+        if m:
+            return m.group(1)
+        # BBH causal_judgement is yes/no rather than A-E, but it lives in the
+        # same dataset family and is useful as an optional logic subset.
+        yn = re.search(r"\b(Yes|No)\b", raw, re.IGNORECASE)
+        if yn:
+            return yn.group(1).capitalize()
         return None
 
     elif answer_type == "trivalent":
-        m = re.search(r"\b(True|False|Unknown)\b", raw, re.IGNORECASE)
+        m = re.search(r"\b(True|False|Unknown|Uncertain)\b", raw, re.IGNORECASE)
         if m:
-            return m.group(1).capitalize()
+            ans = m.group(1).capitalize()
+            return "Unknown" if ans == "Uncertain" else ans
         return None
 
     return None
@@ -107,11 +125,26 @@ def answers_match(pred: Optional[str], gold: str, answer_type: str) -> bool:
         return False
     pred = pred.strip().lower().replace(",", "")
     gold = gold.strip().lower().replace(",", "")
+    if gold in {"none", "unknown", "uncertain", "cannot be determined"}:
+        return pred in {"none", "unknown", "uncertain", "cannot be determined"}
     if answer_type == "numeric":
         try:
             return abs(float(pred) - float(gold)) < 1e-6
         except ValueError:
             return pred == gold
+    if answer_type == "choice":
+        def norm_choice(x: str) -> str:
+            m = re.search(r"\(([a-e])\)", x)
+            if m:
+                return m.group(1)
+            m = re.search(r"\b([a-e])\b", x)
+            if m:
+                return m.group(1)
+            m = re.search(r"\b(yes|no)\b", x)
+            if m:
+                return m.group(1)
+            return x
+        return norm_choice(pred) == norm_choice(gold)
     return pred == gold
 
 
@@ -150,11 +183,18 @@ def _load_gsm_symbolic(cfg: Dict, n: int, seed: int) -> List[Dict]:
         q_field = "question" if "question" in row else list(row.keys())[0]
         a_field = "answer" if "answer" in row else list(row.keys())[1]
         gold = extract_gsm_answer(str(row[a_field]))
+        orig = row.get("original_id", f"gsm_sym_{i}")
         records.append(make_record(
             dataset_key="gsm_symbolic",
             item_id=f"gsm_sym_{i}",
             question=str(row[q_field]),
             gold_answer=gold or str(row[a_field]),
+            original_id=f"gsm8k_original_{orig}",
+            metadata={
+                "source_original_id": orig,
+                "original_question": row.get("original_question"),
+                "original_answer": row.get("original_answer"),
+            },
         ))
     return records
 
@@ -172,13 +212,19 @@ def _load_gsm_plus(cfg: Dict, n: int, seed: int) -> List[Dict]:
     for i, row in enumerate(ds):
         q_field = "question" if "question" in row else "problem"
         a_field = "answer" if "answer" in row else "solution"
-        gold = extract_gsm_answer(str(row.get(a_field, "")))
+        raw_answer = str(row.get(a_field, ""))
+        gold = extract_gsm_answer(raw_answer)
         records.append(make_record(
             dataset_key="gsm_plus",
             item_id=f"gsm_plus_{i}",
             question=str(row[q_field]),
-            gold_answer=gold or str(row.get(a_field, "")),
-            metadata={"perturbation_type": row.get("perturbation_type", "unknown")},
+            gold_answer=gold or raw_answer,
+            metadata={
+                "perturbation_type": row.get("perturbation_type", "unknown"),
+                "seed_question": row.get("seed_question"),
+                "seed_answer": row.get("seed_answer"),
+                "seed_solution": row.get("seed_solution"),
+            },
         ))
     return records
 
@@ -186,16 +232,20 @@ def _load_gsm_plus(cfg: Dict, n: int, seed: int) -> List[Dict]:
 def _load_gsm_ic(cfg: Dict, n: int, seed: int) -> List[Dict]:
     from datasets import load_dataset
     # Try several known HF IDs for GSM-IC
-    candidates = [cfg["hf_id"], "gsmic/gsm-ic", "mgsm/gsm-ic"]
+    candidates = [cfg["hf_id"], "voidful/GSM-IC", "gsmic/gsm-ic", "mgsm/gsm-ic"]
+    splits = list(dict.fromkeys([cfg["split"], "validation", "test", "train"]))
     ds = None
     for hf_id in candidates:
-        try:
-            ds = load_dataset(hf_id, split=cfg["split"],
-                              cache_dir=cfg.get("cache_dir"))
-            logger.info(f"Loaded GSM-IC from {hf_id}")
+        for split in splits:
+            try:
+                ds = load_dataset(hf_id, split=split,
+                                  cache_dir=cfg.get("cache_dir"))
+                logger.info(f"Loaded GSM-IC from {hf_id}/{split}")
+                break
+            except Exception:
+                continue
+        if ds is not None:
             break
-        except Exception:
-            continue
     if ds is None:
         logger.warning("GSM-IC not found on HuggingFace. Generating synthetic distractors from GSM8K.")
         return _generate_synthetic_gsmic(n, seed, cfg.get("cache_dir"))
@@ -212,6 +262,7 @@ def _load_gsm_ic(cfg: Dict, n: int, seed: int) -> List[Dict]:
             item_id=f"gsm_ic_{i}",
             question=str(row[q_field]),
             gold_answer=gold or str(row[a_field]),
+            metadata={k: row.get(k) for k in row.keys() if k not in (q_field, a_field)},
         ))
     return records
 
@@ -273,16 +324,20 @@ def _load_bbh(cfg: Dict, dataset_key: str, n: int, seed: int) -> List[Dict]:
 
 def _load_folio(cfg: Dict, n: int, seed: int) -> List[Dict]:
     from datasets import load_dataset
-    candidates = [cfg["hf_id"], "tasksource/folio", "yale-nlp/FOLIO"]
+    candidates = ["tasksource/folio", cfg["hf_id"], "yale-nlp/FOLIO"]
+    splits = list(dict.fromkeys([cfg["split"], "validation", "test", "train"]))
     ds = None
     for hf_id in candidates:
-        try:
-            ds = load_dataset(hf_id, split=cfg["split"],
-                              cache_dir=cfg.get("cache_dir"))
-            logger.info(f"Loaded FOLIO from {hf_id}")
+        for split in splits:
+            try:
+                ds = load_dataset(hf_id, split=split,
+                                  cache_dir=cfg.get("cache_dir"))
+                logger.info(f"Loaded FOLIO from {hf_id}/{split}")
+                break
+            except Exception:
+                continue
+        if ds is not None:
             break
-        except Exception:
-            continue
     if ds is None:
         logger.warning("FOLIO not found. Skipping.")
         return []
@@ -299,6 +354,8 @@ def _load_folio(cfg: Dict, n: int, seed: int) -> List[Dict]:
         else:
             q = str(row.get("input", ""))
         label = str(row.get("label", row.get("answer", ""))).strip().capitalize()
+        if label == "Uncertain":
+            label = "Unknown"
         if label not in ("True", "False", "Unknown"):
             label = "Unknown"
         records.append(make_record(
@@ -306,6 +363,11 @@ def _load_folio(cfg: Dict, n: int, seed: int) -> List[Dict]:
             item_id=f"folio_{i}",
             question=q,
             gold_answer=label,
+            metadata={
+                "example_id": row.get("example_id"),
+                "story_id": row.get("story_id"),
+                "raw_label": row.get("label", row.get("answer", "")),
+            },
         ))
     return records
 

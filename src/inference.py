@@ -88,14 +88,18 @@ def run_single(
             # Self-consistency: n=5 samples
             n_samples = strategy.get("n_samples", 5)
             temperature = strategy.get("temperature", 0.7)
-            raw_outputs = generate_response(
-                model, tokenizer, prompt_text,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=temperature,
-                top_p=0.95,
-                n_return=n_samples,
-            )
+            # Generate sequentially to keep memory bounded on T4/L4 Colab GPUs.
+            # num_return_sequences=n_samples multiplies KV-cache memory.
+            raw_outputs = []
+            for _ in range(n_samples):
+                raw_outputs.extend(generate_response(
+                    model, tokenizer, prompt_text,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=0.95,
+                    n_return=1,
+                ))
             preds = [extract_model_answer(r, answer_type) for r in raw_outputs]
             pred_answer = majority_vote(preds, answer_type)
             raw_output = raw_outputs[0]  # store first for taxonomy coding
@@ -117,6 +121,7 @@ def run_single(
             "strategy":     strategy_key,
             "question":     record["question"],
             "gold_answer":  record["gold_answer"],
+            "metadata":     record.get("metadata", {}),
             "pred_answer":  pred_answer,
             "correct":      correct,
             "raw_output":   raw_output,
@@ -141,6 +146,7 @@ def _error_result(record: Dict, strategy_key: str, error_msg: str) -> Dict:
         "strategy":    strategy_key,
         "question":    record["question"],
         "gold_answer": record["gold_answer"],
+        "metadata":    record.get("metadata", {}),
         "pred_answer": None,
         "correct":     False,
         "raw_output":  None,
