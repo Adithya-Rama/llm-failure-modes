@@ -27,6 +27,7 @@ PALETTE_TIER   = {"1-2B": "#9ecae1", "3B": "#3182bd", "7-9B": "#08519c"}
 STRATEGY_COLORS = {
     "S0": "#b0b0b0", "S1": "#fdae6b", "S2": "#fd8d3c",
     "S3": "#e6550d", "S4": "#a63603", "S5": "#74c476", "S6": "#238b45",
+    "S5_RANDOM": "#9ecae1", "S5_CORRECT_ONLY": "#31a354",
 }
 
 ERROR_CLASS_LABELS = {
@@ -38,6 +39,7 @@ ERROR_CLASS_LABELS = {
 STRATEGY_LABELS = {
     "S1": "Zero-shot\nCoT", "S2": "Few-shot\n(k=3)", "S3": "Few-shot\nCoT (k=3)",
     "S4": "Few-shot\nCoT (k=5)", "S5": "Error-Targeted\nICL★", "S6": "Self-\nConsistency",
+    "S5_RANDOM": "Random-Target\nICL", "S5_CORRECT_ONLY": "Targeted\nCorrect-Only",
 }
 
 

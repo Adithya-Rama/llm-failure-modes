@@ -380,6 +380,37 @@ def _error_exemplar_to_messages(ex: Dict) -> List[Dict]:
     return [user, assistant]
 
 
+def _error_exemplar_correct_only_to_messages(ex: Dict) -> List[Dict]:
+    """Convert a targeted exemplar to messages without showing the wrong trace."""
+    user_content = (
+        ex["question"] + "\n\n"
+        "[Note: Here is a corrected example for this kind of problem:]\n"
+        f"CORRECT reasoning: {ex['correct_reasoning']}"
+    )
+    user = {"role": "user", "content": user_content}
+    assistant = {"role": "assistant", "content": ex["correct_reasoning"]}
+    return [user, assistant]
+
+
+def _choose_error_target_class(
+    strategy_key: str,
+    error_class: Optional[str],
+    record_id: str,
+    seed: int,
+) -> Optional[str]:
+    """Choose the exemplar bank for S5 and its ablations."""
+    if strategy_key in ("S5", "S5_CORRECT_ONLY"):
+        return error_class
+    if strategy_key == "S5_RANDOM":
+        import random
+        classes = sorted(EXEMPLAR_BANK.keys())
+        if error_class in classes and len(classes) > 1:
+            classes = [c for c in classes if c != error_class]
+        rng = random.Random(f"{seed}:{record_id}:S5_RANDOM")
+        return rng.choice(classes) if classes else None
+    return None
+
+
 def build_prompt(
     record: Dict,
     strategy_key: str,
@@ -427,20 +458,26 @@ def build_prompt(
             messages.extend(_exemplar_to_messages(ex, use_cot))
         messages.append({"role": "user", "content": question})
 
-    elif strategy_key == "S5":
-        # Error-targeted ICL (novel contribution)
-        if error_class is None or error_class not in EXEMPLAR_BANK:
+    elif strategy_key in ("S5", "S5_RANDOM", "S5_CORRECT_ONLY"):
+        # Error-targeted ICL plus ablations.
+        target_class = _choose_error_target_class(
+            strategy_key, error_class, record.get("id", ""), seed
+        )
+        if target_class is None or target_class not in EXEMPLAR_BANK:
             # Fallback to standard few-shot CoT if no error class known
             exemplars = _get_exemplars(answer_type, 3, True, seed=seed)
             for ex in exemplars:
                 messages.extend(_exemplar_to_messages(ex, True))
         else:
-            bank = EXEMPLAR_BANK[error_class]
+            bank = EXEMPLAR_BANK[target_class]
             import random
             rng = random.Random(seed)
             chosen = rng.choices(bank, k=min(3, len(bank)))
             for ex in chosen:
-                messages.extend(_error_exemplar_to_messages(ex))
+                if strategy_key == "S5_CORRECT_ONLY":
+                    messages.extend(_error_exemplar_correct_only_to_messages(ex))
+                else:
+                    messages.extend(_error_exemplar_to_messages(ex))
         messages.append({"role": "user", "content": question})
 
     elif strategy_key == "S6":

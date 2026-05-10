@@ -192,6 +192,9 @@ def run_experiment(
 
     # Resume from checkpoint
     completed, done_ids = load_checkpoint(ckpt_path)
+    active_ids = {r["id"] for r in records}
+    completed = [r for r in completed if r.get("id") in active_ids]
+    done_ids = {r["id"] for r in completed if "id" in r}
     remaining = [r for r in records if r["id"] not in done_ids]
     logger.info(
         f"[{model_cfg['name']} | {strategy_key} | {dataset_key}] "
@@ -207,7 +210,7 @@ def run_experiment(
 
     for record in iterator:
         error_class = None
-        if error_classes and strategy_key == "S5":
+        if error_classes and strategy_key in ("S5", "S5_RANDOM", "S5_CORRECT_ONLY"):
             error_class = error_classes.get(record["id"])
 
         result = run_single(model, tokenizer, model_cfg, record,
@@ -262,7 +265,7 @@ def run_all_strategies(
             if not records:
                 continue
             ec_map = None
-            if baseline_errors and strategy_key == "S5":
+            if baseline_errors and strategy_key in ("S5", "S5_RANDOM", "S5_CORRECT_ONLY"):
                 ec_map = baseline_errors.get(dataset_key, {})
 
             results = run_experiment(

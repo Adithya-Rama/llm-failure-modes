@@ -31,7 +31,7 @@ MODELS = {
         "family":        "llama",
         "size_tier":     "1-2B",
         "requires_auth": True,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
     "qwen-1.5b": {
         "name":          "Qwen2.5-1.5B",
@@ -39,7 +39,7 @@ MODELS = {
         "family":        "qwen",
         "size_tier":     "1-2B",
         "requires_auth": False,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
     "gemma-2b": {
         "name":          "Gemma-2-2B",
@@ -47,7 +47,7 @@ MODELS = {
         "family":        "gemma",
         "size_tier":     "1-2B",
         "requires_auth": True,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
 
     # ── 3B tier (core novelty: fixed size, different families) ─────────────
@@ -57,7 +57,7 @@ MODELS = {
         "family":        "llama",
         "size_tier":     "3B",
         "requires_auth": True,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
     "qwen-3b": {
         "name":          "Qwen2.5-3B",
@@ -65,7 +65,7 @@ MODELS = {
         "family":        "qwen",
         "size_tier":     "3B",
         "requires_auth": False,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
     "phi-3.5": {
         "name":          "Phi-3.5-mini",
@@ -73,7 +73,7 @@ MODELS = {
         "family":        "phi",
         "size_tier":     "3B",
         "requires_auth": False,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
 
     # ── 7–9B tier ──────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ MODELS = {
         "family":        "llama",
         "size_tier":     "7-9B",
         "requires_auth": True,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
     "qwen-7b": {
         "name":          "Qwen2.5-7B",
@@ -91,7 +91,7 @@ MODELS = {
         "family":        "qwen",
         "size_tier":     "7-9B",
         "requires_auth": False,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
     "gemma-9b": {
         "name":          "Gemma-2-9B",
@@ -99,7 +99,7 @@ MODELS = {
         "family":        "gemma",
         "size_tier":     "7-9B",
         "requires_auth": True,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,
     },
 }
 
@@ -319,6 +319,22 @@ ICL_STRATEGIES = {
         "use_cot":     True,
         "novel":       True,
     },
+    "S5_RANDOM": {
+        "name":        "Random-Target ICL (ablation)",
+        "description": "Uses error-targeted exemplar format, but samples from a random error class",
+        "source":      "This work (ablation)",
+        "k_shots":     3,
+        "use_cot":     True,
+        "novel":       False,
+    },
+    "S5_CORRECT_ONLY": {
+        "name":        "Error-Targeted Correct-Only ICL (ablation)",
+        "description": "Uses matched corrective exemplars without showing the wrong reasoning",
+        "source":      "This work (ablation)",
+        "k_shots":     3,
+        "use_cot":     True,
+        "novel":       False,
+    },
     "S6": {
         "name":        "Self-Consistency (n=5)",
         "description": "Sample n=5 responses, majority vote on final answer",
@@ -354,29 +370,47 @@ GENERATION_DEFAULTS = {
 # ─────────────────────────────────────────────
 # EXPERIMENT RUN CONFIG  ← edit this to control what runs
 # ─────────────────────────────────────────────
+# FULL_SCOPE_REFERENCE_DO_NOT_RUN_BY_DEFAULT:
+# The original ambitious grid is preserved here for documentation/reporting.
+#   models = [
+#       "llama-3b", "qwen-3b", "phi-3.5",
+#       "llama-8b", "qwen-7b", "gemma-9b",
+#       "llama-1b", "qwen-1.5b", "gemma-2b",
+#   ]
+#   datasets = [
+#       "gsm8k", "gsm_symbolic", "gsm_plus", "gsm_ic",
+#       "bbh_logical_deduction", "bbh_tracking", "folio",
+#   ]
+#   strategies = ["S0", "S1", "S2", "S3", "S4", "S5", "S6"]
+
 RUN_CONFIG = {
-    # Which model keys to evaluate (subset of MODELS)
+    # HD-focused active grid: controlled, affordable, and still research-rich.
     "models": [
-        "llama-3b", "qwen-3b", "phi-3.5",          # 3B tier (core novelty)
-        "llama-8b", "qwen-7b", "gemma-9b",          # 7-9B tier
-        "llama-1b", "qwen-1.5b", "gemma-2b",        # 1-2B tier
+        "qwen-3b",          # main no-auth baseline
+        "phi-3.5",          # fixed-size family comparison
+        "qwen-7b",          # scaling check
     ],
 
-    # Which dataset keys to use
+    # Clean arithmetic, perturbation, distractor, and formal/logical reasoning.
     "datasets": [
-        "gsm8k", "gsm_symbolic", "gsm_plus",       # easy
-        "bbh_logical_deduction", "bbh_tracking",    # medium
-        "folio",                                     # hard
+        "gsm8k",
+        "gsm_symbolic",
+        "gsm_ic",
+        "folio",
     ],
 
-    # Which ICL strategies to run
-    "strategies": ["S0", "S1", "S2", "S3", "S4", "S5", "S6"],
+    # Main report strategies. Run S6/S5 ablations only on small subsets.
+    "strategies": ["S0", "S1", "S3", "S5"],
+    "optional_ablation_strategies": ["S5_RANDOM", "S5_CORRECT_ONLY", "S6"],
+    "optional_ablation_datasets": ["gsm8k", "gsm_ic"],
+    "optional_ablation_model": "qwen-3b",
+    "optional_ablation_samples": 50,
 
     # Checkpoint every N items (tune for Colab stability)
     "checkpoint_every": 50,
 
-    # Max items per dataset (override dataset default; None = use dataset default)
-    "max_samples": None,
+    # Max items per dataset. Use 10 for smoke tests, 100 for main HD runs.
+    "max_samples": 100,
 
     # Seed for reproducibility (exemplar selection, self-consistency)
     "seed": 42,
@@ -385,5 +419,5 @@ RUN_CONFIG = {
     "run_error_coding": True,
 
     # Number of annotator samples for Cohen's kappa
-    "kappa_sample_size": 150,
+    "kappa_sample_size": 100,
 }

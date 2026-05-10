@@ -71,18 +71,21 @@ def extract_model_answer(raw: str, answer_type: str) -> Optional[str]:
             re.IGNORECASE,
         ):
             return "None"
-        # Look for explicit "answer is X" pattern first
-        m = re.search(r"(?:answer is|=)\s*([\-]?\d[\d,\.]*)", raw, re.IGNORECASE)
-        if m:
-            return m.group(1).replace(",", "").strip()
-        # Then ####
-        m = re.search(r"####\s*([\-\d,\.]+)", raw)
-        if m:
-            return m.group(1).replace(",", "").strip()
-        # Fallback: last number
+        # Prefer explicit final-answer markers. Do NOT treat arbitrary
+        # equations like "6 / 2 = 3" as final answers; those are often
+        # intermediate steps and caused severe under-scoring in early runs.
+        final_patterns = [
+            r"(?:final\s+answer(?:\s+is)?|the\s+answer\s+is|answer\s*:|therefore,?\s+the\s+answer\s+is)\s*[:=]?\s*\$?\s*([\-]?\d[\d,]*(?:\.\d+)?)",
+            r"####\s*([\-]?\d[\d,]*(?:\.\d+)?)",
+        ]
+        for pattern in final_patterns:
+            matches = re.findall(pattern, raw, flags=re.IGNORECASE)
+            if matches:
+                return matches[-1].replace(",", "").strip().rstrip(".")
+        # Fallback: last number in the response.
         nums = re.findall(r"[\-]?\d+(?:,\d{3})*(?:\.\d+)?", raw)
         if nums:
-            return nums[-1].replace(",", "")
+            return nums[-1].replace(",", "").strip().rstrip(".")
         return None
 
     elif answer_type == "choice":
