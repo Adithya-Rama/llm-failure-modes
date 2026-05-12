@@ -89,6 +89,14 @@ def load_model(
         model_kwargs["torch_dtype"] = torch.bfloat16
         logger.info("  Using bf16 (no quantisation)")
 
+    # Phi-3.5 / Phi-3 models raise DynamicCache.from_legacy_cache errors
+    # with recent Transformers versions when flash-attention is used.
+    # Force eager (standard) attention to sidestep the issue entirely.
+    family = cfg["family"]
+    if family == "phi":
+        model_kwargs["attn_implementation"] = "eager"
+        logger.info("  Phi family: using eager attention (DynamicCache workaround)")
+
     model = AutoModelForCausalLM.from_pretrained(hf_id, **model_kwargs)
     model.eval()
 

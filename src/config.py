@@ -384,40 +384,74 @@ GENERATION_DEFAULTS = {
 #   strategies = ["S0", "S1", "S2", "S3", "S4", "S5", "S6"]
 
 RUN_CONFIG = {
-    # HD-focused active grid: controlled, affordable, and still research-rich.
+    # ── Active model grid ──────────────────────────────────────────────────
+    # With 220 Colab Pro A100 credits (~73 GPU-hours), running 9 models ×
+    # 5 datasets × 4 strategies (S0, S1, S3, S5) + S6/ablations on a
+    # small subset fits comfortably (~55-60 GPU-hours ≈ 165-180 credits).
+    #
+    # Auth-gated models (llama-*, gemma-*) require HF_TOKEN set in Colab
+    # Secrets.  No-auth models (qwen-*, phi-3.5) run without a token.
     "models": [
-        "qwen-3b",          # main no-auth baseline
-        "phi-3.5",          # fixed-size family comparison
-        "qwen-7b",          # scaling check
+        # 1-2B tier — one per family for scaling curve
+        "qwen-1.5b",    # no auth
+        "llama-1b",     # needs HF token
+        # gemma-2b excluded: same tier as qwen-1.5b, needs auth, adds 20+ min
+        # 3B tier — key family-comparison tier
+        "qwen-3b",      # no auth — primary model
+        "phi-3.5",      # no auth — math-focused, tests H6
+        "llama-3b",     # needs HF token — family contrast at 3B
+        # 7-9B tier — scaling check
+        "qwen-7b",      # no auth
+        "llama-8b",     # needs HF token
+        # gemma-9b excluded: needs auth; llama-8b covers the 7-9B tier
     ],
 
-    # Clean arithmetic, perturbation, distractor, and formal/logical reasoning.
+    # ── Datasets ───────────────────────────────────────────────────────────
+    # 5 datasets covering all difficulty tiers and error classes.
     "datasets": [
-        "gsm8k",
-        "gsm_symbolic",
-        "gsm_ic",
-        "folio",
+        "gsm8k",                # easy / clean arithmetic (E1 baseline)
+        "gsm_ic",               # easy / distractor capture (E2 target)
+        "gsm_symbolic",         # easy / perturbation robustness (paired with gsm8k)
+        "bbh_logical_deduction",# medium / logical reasoning (E3/E7)
+        "folio",                # hard / formal FOL (E5/E7)
     ],
 
-    # Main report strategies. Run S6/S5 ablations only on small subsets.
+    # ── Main strategies ────────────────────────────────────────────────────
+    # S0 (baseline) → S1 (zero-shot CoT) → S3 (few-shot CoT k=3) → S5 (novel)
     "strategies": ["S0", "S1", "S3", "S5"],
+
+    # ── Ablation strategies (run on small subset only) ─────────────────────
+    # S5_RANDOM: control — error-targeted format but wrong error class
+    # S5_CORRECT_ONLY: ablation — correct class, no wrong-trace shown
+    # S6: self-consistency — 5× inference cost, run on 50-item subset
     "optional_ablation_strategies": ["S5_RANDOM", "S5_CORRECT_ONLY", "S6"],
     "optional_ablation_datasets": ["gsm8k", "gsm_ic"],
     "optional_ablation_model": "qwen-3b",
     "optional_ablation_samples": 50,
 
-    # Checkpoint every N items (tune for Colab stability)
+    # ── Phase-2 scope ──────────────────────────────────────────────────────
+    # Phase 2 (S1/S3/S5) runs on all models — that's where the heatmap data
+    # comes from.  All models listed here will run S1, S3, S5.
+    "phase2_models": [
+        "qwen-1.5b", "llama-1b",
+        "qwen-3b", "phi-3.5", "llama-3b",
+        "qwen-7b", "llama-8b",
+    ],
+
+    # ── Infrastructure ─────────────────────────────────────────────────────
+    # Checkpoint every N items.  50 is safe for Colab (saves ~every 4-8 min).
     "checkpoint_every": 50,
 
-    # Max items per dataset. Use 10 for smoke tests, 100 for main HD runs.
+    # Samples per dataset.  100 gives meaningful statistics without blowing
+    # the credit budget.  Use 10 for smoke tests.
     "max_samples": 100,
 
-    # Seed for reproducibility (exemplar selection, self-consistency)
+    # Reproducibility seed
     "seed": 42,
 
-    # Whether to run error coding after baseline
+    # Run rule-based error coding automatically after S0 baseline
     "run_error_coding": True,
 
-    # Number of annotator samples for Cohen's kappa
-    "kappa_sample_size": 100,
+    # Items to sample for human annotation (Cohen's κ validation)
+    "kappa_sample_size": 150,
 }

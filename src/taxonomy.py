@@ -31,32 +31,124 @@ def _is_format_error(result: Dict, answer_type: str) -> bool:
     return pred is None and len(raw.strip()) > 30
 
 
+def _normalise_math_text(raw: str) -> str:
+    """
+    Strip LaTeX delimiters and normalise math operators so plain-text
+    arithmetic regexes can match expressions inside LaTeX.
+
+    Handles: \\[ ... \\], \\( ... \\), $ ... $, \\text{...},
+             \\times / \\cdot → *, \\frac{a}{b} → a/b approximation.
+    """
+    # Remove LaTeX environment delimiters
+    text = re.sub(r"\\\[|\\\]|\\\(|\\\)", " ", raw)
+    text = re.sub(r"\$+", " ", text)
+    # Normalise multiplication operators to *
+    text = re.sub(r"\\times\b|\\cdot\b", "*", text)
+    # Remove LaTeX commands that wrap text (e.g. \text{Total sold})
+    text = re.sub(r"\\text\{([^}]*)\}", r"\1", text)
+    # Remove remaining LaTeX commands (e.g. \frac, \left, \right)
+    text = re.sub(r"\\[a-zA-Z]+", " ", text)
+    # Remove LaTeX grouping braces
+    text = re.sub(r"[{}]", " ", text)
+    return text
+
+
 def _has_arithmetic_error(result: Dict) -> bool:
     """
-    E1: Try to detect arithmetic slips by re-evaluating simple expressions
-    found in the reasoning trace.
+    E1: Detect arithmetic slips by re-evaluating simple expressions in the
+    reasoning trace.  Handles plain text AND LaTeX-formatted math.
+
+    Also catches the case where the model's stated final answer does not
+    match the last intermediate computed value in its own trace — a common
+    pattern when a model computes correctly but then copies the wrong number.
     """
     raw = result.get("raw_output") or ""
-    # Find patterns like "X + Y = Z" or "X * Y = Z"
+    # Work on both original and LaTeX-normalised text
+    texts_to_check = [raw, _normalise_math_text(raw)]
+
     patterns = [
-        (r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)", lambda a, b, c: int(a) + int(b) == int(c)),
-        (r"(\d+)\s*-\s*(\d+)\s*=\s*(\d+)", lambda a, b, c: int(a) - int(b) == int(c)),
-        (r"(\d+)\s*[×x\*]\s*(\d+)\s*=\s*(\d+)", lambda a, b, c: int(a) * int(b) == int(c)),
-        (r"(\d+)\s*/\s*(\d+)\s*=\s*([\d\.]+)", lambda a, b, c: abs(int(a) / int(b) - float(c)) < 0.1),
+        # Binary: A + B = C
+        (r"([\d,]+(?:\.\d+)?)\s*\+\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)",
+         lambda a, b, c: abs((_n(a) + _n(b)) - _n(c)) < max(0.5, 0.001 * abs(_n(c)))),
+        # Binary: A - B = C
+        (r"([\d,]+(?:\.\d+)?)\s*-\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)",
+         lambda a, b, c: abs((_n(a) - _n(b)) - _n(c)) < max(0.5, 0.001 * abs(_n(c)))),
+        # Binary: A * B = C  (also handles × already normalised)
+        (r"([\d,]+(?:\.\d+)?)\s*[x*×]\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)",
+         lambda a, b, c: abs((_n(a) * _n(b)) - _n(c)) < max(0.5, 0.001 * abs(_n(c)))),
+        # Division: A / B = C
+        (r"([\d,]+(?:\.\d+)?)\s*/\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)",
+         lambda a, b, c: _safe_div_check(a, b, c)),
+        # Three-term addition: A + B + C = D
+        (r"([\d,]+(?:\.\d+)?)\s*\+\s*([\d,]+(?:\.\d+)?)\s*\+\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)",
+         lambda a, b, c, d=None: True),  # handled separately below
     ]
-    errors_found = False
-    for pattern, checker in patterns:
-        for m in re.finditer(pattern, raw):
+
+    for text in texts_to_check:
+        # Three-term sums handled separately
+        for m in re.finditer(
+            r"([\d,]+(?:\.\d+)?)\s*\+\s*([\d,]+(?:\.\d+)?)\s*\+\s*([\d,]+(?:\.\d+)?)\s*=\s*([\d,]+(?:\.\d+)?)",
+            text
+        ):
             try:
-                a, b, c = m.group(1), m.group(2), m.group(3)
-                if not checker(a, b, c):
-                    errors_found = True
-                    break
+                a, b, c, d = m.group(1), m.group(2), m.group(3), m.group(4)
+                expected = _n(a) + _n(b) + _n(c)
+                if abs(expected - _n(d)) > max(0.5, 0.001 * abs(expected)):
+                    return True
             except (ValueError, ZeroDivisionError):
                 continue
-        if errors_found:
-            break
-    return errors_found
+
+        # Binary patterns
+        for pattern, checker in patterns[:4]:
+            for m in re.finditer(pattern, text):
+                try:
+                    a, b, c = m.group(1), m.group(2), m.group(3)
+                    if not checker(a, b, c):
+                        return True
+                except (ValueError, ZeroDivisionError, IndexError):
+                    continue
+
+    # Extra check: pred_answer doesn't match the last intermediate result
+    # shown in the trace (model computed correctly but wrote wrong final answer)
+    pred = result.get("pred_answer")
+    if pred is not None:
+        try:
+            pred_val = float(str(pred).replace(",", ""))
+            # Extract all "= <number>" occurrences
+            intermediates = re.findall(
+                r"=\s*\$?\s*([\-]?\d[\d,]*(?:\.\d+)?)", raw
+            )
+            if len(intermediates) >= 2:
+                try:
+                    last_computed = float(intermediates[-1].replace(",", ""))
+                    second_last = float(intermediates[-2].replace(",", ""))
+                    # If pred differs from last computed by more than 1 but
+                    # matches an earlier intermediate, that's a copy-paste slip
+                    if (abs(pred_val - last_computed) > 1.0
+                            and abs(pred_val - second_last) < 1.0):
+                        return True
+                except ValueError:
+                    pass
+        except (ValueError, AttributeError):
+            pass
+
+    return False
+
+
+def _n(s: str) -> float:
+    """Parse a numeric string (strips commas and spaces)."""
+    return float(str(s).replace(",", "").strip())
+
+
+def _safe_div_check(a: str, b: str, c: str) -> bool:
+    """Return True (no error) if A/B ≈ C."""
+    try:
+        denom = _n(b)
+        if denom == 0:
+            return True  # skip division by zero
+        return abs(_n(a) / denom - _n(c)) < max(0.1, 0.001 * abs(_n(c)))
+    except (ValueError, ZeroDivisionError):
+        return True
 
 
 def _has_distractor_signal(result: Dict) -> bool:
@@ -78,33 +170,127 @@ def _has_distractor_signal(result: Dict) -> bool:
 
 
 def _has_step_skip(result: Dict) -> bool:
-    """E4: Reasoning trace is very short for a multi-step problem."""
+    """
+    E4: Model skips a required intermediate step.
+
+    Two detection modes:
+    1. Short-response mode: output is short AND has few computation lines for
+       a complex problem (original heuristic, relaxed thresholds).
+    2. Early-stop mode: the model's predicted answer appears as an intermediate
+       computed value *before* the final step, indicating the model stopped
+       mid-calculation (e.g. computed monthly cost but not annual).
+    """
     raw = result.get("raw_output") or ""
     question = result.get("question") or ""
-    # Count numbers in question (proxy for problem complexity)
+    pred = result.get("pred_answer")
+
     q_nums = len(re.findall(r"\d+", question))
-    # Count logical steps in output
-    steps = len(re.findall(r"\n|therefore|so|then|because|thus", raw, re.IGNORECASE))
-    return q_nums >= 3 and steps < 2 and len(raw) < 150
+    if q_nums < 3:
+        return False  # trivial problem — step skip not meaningful
+
+    # Mode 1: Very short output with almost no computation steps
+    computation_lines = re.findall(
+        r"[\d,]+(?:\.\d+)?\s*[+\-×x*/]\s*[\d,]+(?:\.\d+)?\s*=", raw
+    )
+    if len(raw) < 600 and len(computation_lines) < 2:
+        return True
+
+    # Mode 2: pred_answer matches an intermediate (not final) computed value.
+    # This catches "forgot to multiply by 12" style errors.
+    if pred is not None:
+        try:
+            pred_val = float(str(pred).replace(",", ""))
+            if abs(pred_val) < 0.001:
+                return False  # zero answer not meaningful here
+
+            # Find all "= <number>" occurrences in the output
+            intermediates = re.findall(
+                r"=\s*\$?\s*([\-]?\d[\d,]*(?:\.\d+)?)", raw
+            )
+            # If there are multiple intermediate values and pred equals one
+            # of the non-final ones, the model stopped too early.
+            if len(intermediates) >= 3:
+                for inter in intermediates[:-2]:   # skip last two (final answer)
+                    try:
+                        if abs(float(inter.replace(",", "")) - pred_val) < 0.5:
+                            return True
+                    except ValueError:
+                        continue
+        except (ValueError, AttributeError):
+            pass
+
+    return False
 
 
 def _has_hallucination(result: Dict) -> bool:
     """
-    E5: Model introduces numerical values not present in the question.
-    Heuristic: numbers in output that don't appear in question or are not
-    the result of clearly shown arithmetic.
+    E5: Model introduces numerical values not present in the question and not
+    derivable from question numbers via standard arithmetic.
+
+    We are conservative here to avoid false positives (e.g. compound interest
+    results that appear large but ARE derivable).  Only flag when:
+    - ≥ 2 large numbers (> 500) appear in the output that are not in the question
+    - AND those numbers cannot be derived by any of: +, -, *, /, % of question nums
+    - AND the model makes explicit factual claims (not just calculations)
     """
     raw = result.get("raw_output") or ""
     question = result.get("question") or ""
-    q_nums = set(re.findall(r"\d+", question))
-    out_nums = set(re.findall(r"\b\d+\b", raw))
-    # Numbers in output that weren't in question and aren't simple arithmetic results
+
+    q_nums_str = re.findall(r"\d+(?:\.\d+)?", question)
+    q_nums = set(q_nums_str)
+    try:
+        q_vals = [float(n) for n in q_nums_str]
+    except ValueError:
+        q_vals = []
+
+    out_nums_str = re.findall(r"\b\d+(?:\.\d+)?\b", raw)
+    out_nums = set(out_nums_str)
+
     extra = out_nums - q_nums
-    # Filter out very small numbers (likely intermediate arithmetic)
-    extra_large = {n for n in extra if int(n) > 100 and int(n) not in
-                   {int(x) * int(y) for x in q_nums for y in q_nums
-                    if x.isdigit() and y.isdigit()}}
-    return len(extra_large) > 1
+
+    # Build the set of derivable values: products, sums, diffs, ratios,
+    # percentages, and squares of all pairs of question numbers.
+    derivable: set = set()
+    for x in q_vals:
+        for y in q_vals:
+            derivable.update([
+                round(x + y, 2), round(x - y, 2), round(x * y, 2),
+                round(x / y, 2) if y != 0 else None,
+                round(x * y / 100, 2),          # percentage
+                round(x + x * y / 100, 2),      # base + percent
+                round(x * (1 + y / 100) ** 2, 2),  # 2-year compound
+                round(x * (1 + y / 100) ** 3, 2),  # 3-year compound
+            ])
+        derivable.add(round(x ** 2, 2))
+    derivable.discard(None)
+
+    def _is_derivable(n_str: str) -> bool:
+        try:
+            val = round(float(n_str), 2)
+            if val <= 0:
+                return True
+            return any(abs(val - d) < max(1.0, 0.01 * abs(val)) for d in derivable if d)
+        except ValueError:
+            return True
+
+    # Only count large "phantom" numbers (>500) that are not derivable
+    phantom = [
+        n for n in extra
+        if (lambda v: v > 500)(float(n)) and not _is_derivable(n)
+    ]
+
+    if len(phantom) < 2:
+        return False
+
+    # Additionally require the model makes an explicit factual assertion
+    # (not just calculation).  Hallucinations typically look like
+    # "the store charges X" or "originally there were Y".
+    hallucination_phrases = re.search(
+        r"\b(originally|initially|assume|given that|stated that|according to|"
+        r"the problem says|we know that|it is known)\b",
+        raw, re.IGNORECASE
+    )
+    return hallucination_phrases is not None
 
 
 def _has_logical_reversal(result: Dict) -> bool:
@@ -132,6 +318,11 @@ def code_error_rulebased(result: Dict, answer_type: str) -> str:
     """
     if result.get("correct"):
         return "E0"
+
+    # Runtime/model failures are not reasoning failures. Keep them out of the
+    # substantive taxonomy so a broken model load does not masquerade as E2/E4.
+    if result.get("error_msg") and not (result.get("raw_output") or "").strip():
+        return "EU"
 
     # E6 Format — check first (before other checks which require parseable output)
     if _is_format_error(result, answer_type):
@@ -167,6 +358,12 @@ def code_error_rulebased(result: Dict, answer_type: str) -> str:
     # E3 Premise-order (hard to detect rule-based; mark for LLM review)
     if answer_type in ("choice", "trivalent"):
         return "E3"
+
+    # For wrong numeric answers that pass all other checks, default to E1.
+    # A model that gives a wrong number after showing reasoning most likely
+    # made an arithmetic or step-level error — labelling it EU hides signal.
+    if answer_type == "numeric":
+        return "E1"
 
     return "EU"  # Unclassifiable by rules
 

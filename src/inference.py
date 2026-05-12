@@ -76,6 +76,10 @@ def run_single(
     answer_type = dataset_cfg.get("answer_type", "numeric")
     family = model_cfg["family"]
     max_new_tokens = model_cfg.get("max_new_tokens", 512)
+    if answer_type == "trivalent":
+        # FOLIO-style prompts are long, especially under few-shot CoT. A 256
+        # token cap often truncates before the True/False/Unknown verdict.
+        max_new_tokens = max(max_new_tokens, 384)
 
     strategy = ICL_STRATEGIES[strategy_key]
 

@@ -113,10 +113,27 @@ def extract_model_answer(raw: str, answer_type: str) -> Optional[str]:
         return None
 
     elif answer_type == "trivalent":
-        m = re.search(r"\b(True|False|Unknown|Uncertain)\b", raw, re.IGNORECASE)
-        if m:
-            ans = m.group(1).capitalize()
-            return "Unknown" if ans == "Uncertain" else ans
+        label_pattern = r"(True|False|Unknown|Uncertain|Cannot be determined|Not enough information|Undetermined)"
+        final_patterns = [
+            rf"(?:final\s+answer(?:\s+is)?|the\s+answer\s+is|answer\s*:|therefore,?\s+the\s+answer\s+is)\s*[:=]?\s*{label_pattern}",
+            rf"\b{label_pattern}\b\s*$",
+        ]
+        for pattern in final_patterns:
+            matches = re.findall(pattern, raw, flags=re.IGNORECASE)
+            if matches:
+                ans = matches[-1]
+                if isinstance(ans, tuple):
+                    ans = next((x for x in ans if x), "")
+                ans = ans.strip().lower()
+                if ans in {"unknown", "uncertain", "cannot be determined", "not enough information", "undetermined"}:
+                    return "Unknown"
+                return ans.capitalize()
+        matches = re.findall(label_pattern, raw, flags=re.IGNORECASE)
+        if matches:
+            ans = matches[-1].strip().lower()
+            if ans in {"unknown", "uncertain", "cannot be determined", "not enough information", "undetermined"}:
+                return "Unknown"
+            return ans.capitalize()
         return None
 
     return None

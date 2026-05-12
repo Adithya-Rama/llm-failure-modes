@@ -168,23 +168,59 @@ def robustness_ratio(
 ) -> float:
     """
     Mirzadeh-style robustness ratio: acc_perturbed / acc_clean.
-    Requires paired items (matching original_id).
-    """
-    clean_by_id = {r["original_id"]: r for r in clean_results}
-    paired_clean, paired_perturbed = [], []
-    for r in perturbed_results:
-        orig_id = r.get("original_id", r["id"])
-        if orig_id in clean_by_id:
-            paired_clean.append(clean_by_id[orig_id])
-            paired_perturbed.append(r)
 
-    if not paired_clean:
-        logger.warning("No paired items found for robustness ratio.")
+    Tries paired matching first (by original_id).  Falls back to aggregate
+    (unpaired) ratio when IDs don't align — this happens with the real GSM-IC
+    dataset which doesn't expose explicit links back to GSM8K items.
+
+    Returns NaN only if either list is empty.
+    """
+    if not clean_results or not perturbed_results:
+        logger.warning("robustness_ratio: one or both result lists are empty.")
         return float("nan")
 
-    acc_clean = accuracy(paired_clean)
-    acc_perturbed = accuracy(paired_perturbed)
-    ratio = acc_perturbed / acc_clean if acc_clean > 0 else float("nan")
+    # Attempt paired matching
+    # Build lookup from clean items' *item id* (not original_id, since for
+    # GSM8K clean items original_id == id).
+    clean_by_id: Dict[str, Dict] = {}
+    for r in clean_results:
+        clean_by_id[r.get("id", "")] = r
+        clean_by_id[r.get("original_id", r.get("id", ""))] = r
+
+    paired_clean, paired_perturbed = [], []
+    for r in perturbed_results:
+        orig_id = r.get("original_id") or r.get("id", "")
+        item_id = r.get("id", "")
+        match = clean_by_id.get(orig_id) or clean_by_id.get(item_id)
+        if match:
+            paired_clean.append(match)
+            paired_perturbed.append(r)
+
+    n_paired = len(paired_clean)
+    logger.info(f"robustness_ratio: {n_paired} paired items out of "
+                f"{len(clean_results)} clean / {len(perturbed_results)} perturbed")
+
+    if n_paired >= 10:
+        # Enough pairs for a meaningful paired ratio
+        acc_clean = accuracy(paired_clean)
+        acc_perturbed = accuracy(paired_perturbed)
+        mode = "paired"
+    else:
+        # Insufficient paired IDs (common with real GSM-IC) → aggregate ratio
+        logger.warning(
+            f"Only {n_paired} paired items found; using aggregate "
+            "perturbed/clean accuracy ratio (unpaired)."
+        )
+        acc_clean = accuracy(clean_results)
+        acc_perturbed = accuracy(perturbed_results)
+        mode = "aggregate"
+
+    if acc_clean <= 0:
+        logger.warning("robustness_ratio: clean accuracy is 0 — cannot compute ratio.")
+        return float("nan")
+
+    ratio = acc_perturbed / acc_clean
+    logger.info(f"robustness_ratio ({mode}): {acc_perturbed:.3f} / {acc_clean:.3f} = {ratio:.3f}")
     return ratio
 
 
@@ -215,6 +251,8 @@ def robustness_table(
                     "strategy":     strat,
                     "clean_dataset":     clean_key,
                     "perturbed_dataset": perturbed_key,
+                    "n_clean":      len(clean),
+                    "n_perturbed":  len(perturbed),
                     "robustness_ratio":  ratio,
                 })
     return pd.DataFrame(rows)
