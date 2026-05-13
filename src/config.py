@@ -31,7 +31,7 @@ MODELS = {
         "family":        "llama",
         "size_tier":     "1-2B",
         "requires_auth": True,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,   # CoT responses need room; 256 causes truncation
     },
     "qwen-1.5b": {
         "name":          "Qwen2.5-1.5B",
@@ -39,7 +39,7 @@ MODELS = {
         "family":        "qwen",
         "size_tier":     "1-2B",
         "requires_auth": False,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
     "gemma-2b": {
         "name":          "Gemma-2-2B",
@@ -47,7 +47,7 @@ MODELS = {
         "family":        "gemma",
         "size_tier":     "1-2B",
         "requires_auth": True,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
 
     # ── 3B tier (core novelty: fixed size, different families) ─────────────
@@ -57,7 +57,7 @@ MODELS = {
         "family":        "llama",
         "size_tier":     "3B",
         "requires_auth": True,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
     "qwen-3b": {
         "name":          "Qwen2.5-3B",
@@ -65,7 +65,7 @@ MODELS = {
         "family":        "qwen",
         "size_tier":     "3B",
         "requires_auth": False,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
     "phi-3.5": {
         "name":          "Phi-3.5-mini",
@@ -73,7 +73,7 @@ MODELS = {
         "family":        "phi",
         "size_tier":     "3B",
         "requires_auth": False,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
 
     # ── 7–9B tier ──────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ MODELS = {
         "family":        "llama",
         "size_tier":     "7-9B",
         "requires_auth": True,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
     "qwen-7b": {
         "name":          "Qwen2.5-7B",
@@ -91,7 +91,7 @@ MODELS = {
         "family":        "qwen",
         "size_tier":     "7-9B",
         "requires_auth": False,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
     "gemma-9b": {
         "name":          "Gemma-2-9B",
@@ -99,7 +99,7 @@ MODELS = {
         "family":        "gemma",
         "size_tier":     "7-9B",
         "requires_auth": True,
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
     },
 }
 
@@ -384,74 +384,78 @@ GENERATION_DEFAULTS = {
 #   strategies = ["S0", "S1", "S2", "S3", "S4", "S5", "S6"]
 
 RUN_CONFIG = {
-    # ── Active model grid ──────────────────────────────────────────────────
-    # With 220 Colab Pro A100 credits (~73 GPU-hours), running 9 models ×
-    # 5 datasets × 4 strategies (S0, S1, S3, S5) + S6/ablations on a
-    # small subset fits comfortably (~55-60 GPU-hours ≈ 165-180 credits).
+    # ── Full 9 × 7 × 7 grid ───────────────────────────────────────────────
+    # 3-member team splits the 9 models (3 each).  Each member runs their
+    # 3 models × 7 datasets × 7 strategies on their own Colab account.
     #
-    # Auth-gated models (llama-*, gemma-*) require HF_TOKEN set in Colab
-    # Secrets.  No-auth models (qwen-*, phi-3.5) run without a token.
+    # Estimated GPU-hours per member (A100, 100 items/dataset):
+    #   Member 1 — Qwen  (no-auth):            ~34 hrs  ≈  102 credits
+    #   Member 2 — Llama (HF token required):  ~39 hrs  ≈  117 credits
+    #   Member 3 — Phi + Gemma (HF token):     ~47 hrs  ≈  141 credits
+    # Total across all 3 members: ~360 credits (well within 220 × 3 = 660).
+    #
+    # Auth notes:
+    #   llama-*, gemma-* require HF_TOKEN in Colab Secrets (gated models).
+    #   qwen-*, phi-3.5 are public — no token needed.
+
     "models": [
-        # 1-2B tier — one per family for scaling curve
-        "qwen-1.5b",    # no auth
-        "llama-1b",     # needs HF token
-        # gemma-2b excluded: same tier as qwen-1.5b, needs auth, adds 20+ min
-        # 3B tier — key family-comparison tier
-        "qwen-3b",      # no auth — primary model
-        "phi-3.5",      # no auth — math-focused, tests H6
-        "llama-3b",     # needs HF token — family contrast at 3B
-        # 7-9B tier — scaling check
-        "qwen-7b",      # no auth
-        "llama-8b",     # needs HF token
-        # gemma-9b excluded: needs auth; llama-8b covers the 7-9B tier
+        # ─── 1–2B tier ────────────────────────────────────────────────────
+        "qwen-1.5b",    # Member 1 | no auth  | Qwen family
+        "llama-1b",     # Member 2 | HF token | Llama family
+        "gemma-2b",     # Member 3 | HF token | Gemma family
+        # ─── 3B tier (key family-comparison tier) ─────────────────────────
+        "qwen-3b",      # Member 1 | no auth  | Qwen family   — PRIMARY model
+        "phi-3.5",      # Member 3 | no auth  | Phi family    — math-focused
+        "llama-3b",     # Member 2 | HF token | Llama family
+        # ─── 7–9B tier ────────────────────────────────────────────────────
+        "qwen-7b",      # Member 1 | no auth  | Qwen family
+        "llama-8b",     # Member 2 | HF token | Llama family
+        "gemma-9b",     # Member 3 | HF token | Gemma family
     ],
 
-    # ── Datasets ───────────────────────────────────────────────────────────
-    # 5 datasets covering all difficulty tiers and error classes.
+    # ── Member model assignment ────────────────────────────────────────────
+    # Set RUN_MEMBER in main.py / Colab to pick your slice.
+    "member_models": {
+        1: ["qwen-1.5b",  "qwen-3b",   "qwen-7b"],    # Qwen scaling, no-auth
+        2: ["llama-1b",   "llama-3b",  "llama-8b"],   # Llama scaling, HF token
+        3: ["gemma-2b",   "phi-3.5",   "gemma-9b"],   # Cross-family, HF token
+    },
+
+    # ── 7 datasets ────────────────────────────────────────────────────────
+    # Covers all difficulty tiers: easy (GSM family), medium (BBH), hard (FOLIO).
     "datasets": [
-        "gsm8k",                # easy / clean arithmetic (E1 baseline)
-        "gsm_ic",               # easy / distractor capture (E2 target)
-        "gsm_symbolic",         # easy / perturbation robustness (paired with gsm8k)
-        "bbh_logical_deduction",# medium / logical reasoning (E3/E7)
-        "folio",                # hard / formal FOL (E5/E7)
+        "gsm8k",                 # easy  / clean arithmetic    — E1 baseline
+        "gsm_ic",                # easy  / distractor capture  — E2 target
+        "gsm_symbolic",          # easy  / GSM perturbation    — robustness pair
+        "gsm_plus",              # easy  / harder GSM variants — extra robustness
+        "bbh_logical_deduction", # medium / logical deduction  — E3/E7
+        "bbh_tracking",          # medium / object tracking    — E3/E4
+        "folio",                 # hard   / formal FOL         — E5/E7
     ],
 
-    # ── Main strategies ────────────────────────────────────────────────────
-    # S0 (baseline) → S1 (zero-shot CoT) → S3 (few-shot CoT k=3) → S5 (novel)
-    "strategies": ["S0", "S1", "S3", "S5"],
+    # ── 7 strategies ──────────────────────────────────────────────────────
+    # Full grid: S0 → S1 → S2 → S3 → S4 → S5 (novel) → S6 (self-consistency)
+    # S6 costs 5× (n=5 samples); run after all S0–S5 checkpoints are saved.
+    "strategies": ["S0", "S1", "S2", "S3", "S4", "S5", "S6"],
 
-    # ── Ablation strategies (run on small subset only) ─────────────────────
-    # S5_RANDOM: control — error-targeted format but wrong error class
-    # S5_CORRECT_ONLY: ablation — correct class, no wrong-trace shown
-    # S6: self-consistency — 5× inference cost, run on 50-item subset
-    "optional_ablation_strategies": ["S5_RANDOM", "S5_CORRECT_ONLY", "S6"],
-    "optional_ablation_datasets": ["gsm8k", "gsm_ic"],
+    # ── Phase-2 scope ──────────────────────────────────────────────────────
+    # All 9 models run the full strategy grid.  Each member handles their 3.
+    "phase2_models": [
+        "qwen-1.5b", "qwen-3b", "qwen-7b",
+        "llama-1b",  "llama-3b", "llama-8b",
+        "gemma-2b",  "phi-3.5",  "gemma-9b",
+    ],
+
+    # ── Ablation strategies (S5 controls — run on qwen-3b, 50 items) ──────
+    "optional_ablation_strategies": ["S5_RANDOM", "S5_CORRECT_ONLY"],
+    "optional_ablation_datasets": ["gsm8k", "gsm_ic", "folio"],
     "optional_ablation_model": "qwen-3b",
     "optional_ablation_samples": 50,
 
-    # ── Phase-2 scope ──────────────────────────────────────────────────────
-    # Phase 2 (S1/S3/S5) runs on all models — that's where the heatmap data
-    # comes from.  All models listed here will run S1, S3, S5.
-    "phase2_models": [
-        "qwen-1.5b", "llama-1b",
-        "qwen-3b", "phi-3.5", "llama-3b",
-        "qwen-7b", "llama-8b",
-    ],
-
     # ── Infrastructure ─────────────────────────────────────────────────────
-    # Checkpoint every N items.  50 is safe for Colab (saves ~every 4-8 min).
-    "checkpoint_every": 50,
-
-    # Samples per dataset.  100 gives meaningful statistics without blowing
-    # the credit budget.  Use 10 for smoke tests.
-    "max_samples": 100,
-
-    # Reproducibility seed
-    "seed": 42,
-
-    # Run rule-based error coding automatically after S0 baseline
-    "run_error_coding": True,
-
-    # Items to sample for human annotation (Cohen's κ validation)
-    "kappa_sample_size": 150,
+    "checkpoint_every":  50,    # save every N items (Colab-safe ~4-8 min interval)
+    "max_samples":       100,   # items per dataset (use 10 for smoke tests)
+    "seed":              42,
+    "run_error_coding":  True,  # auto-code errors after S0 baseline
+    "kappa_sample_size": 150,   # items for human annotation / Cohen's κ
 }

@@ -64,25 +64,51 @@ def extract_model_answer(raw: str, answer_type: str) -> Optional[str]:
     if answer_type == "numeric":
         # GSM-Plus includes unanswerable/critical-thinking perturbations whose
         # gold answer is "None". Treat explicit non-answer statements as a
-        # scorable prediction rather than as a parse failure.
-        if re.search(
-            r"\b(answer is\s+)?(none|unknown|cannot be determined|not enough information)\b",
-            raw,
-            re.IGNORECASE,
-        ):
-            return "None"
-        # Prefer explicit final-answer markers. Do NOT treat arbitrary
-        # equations like "6 / 2 = 3" as final answers; those are often
-        # intermediate steps and caused severe under-scoring in early runs.
+        # scorable prediction rather than as a parse failure — but ONLY
+        # when the phrase appears at the END of the response (not mid-reasoning).
+        # Previous version matched "if we cannot determine X then..." which
+        # falsely returned None for many valid answers.
+        tail = raw[-200:]   # only check the last 200 chars
+        none_patterns = [
+            r"(?:the\s+)?answer\s+is\s+(?:none|unknown|cannot\s+be\s+determined|"
+            r"not\s+enough\s+information|undetermined)\s*\.?\s*$",
+            r"^(?:none|unknown|cannot\s+be\s+determined|not\s+enough\s+information|"
+            r"undetermined)\s*\.?\s*$",
+        ]
+        for p in none_patterns:
+            if re.search(p, tail, re.IGNORECASE | re.MULTILINE):
+                return "None"
+
+        # ── Priority-ordered answer extraction ──────────────────────────────
+        # Each pattern is tried in order; the LAST match (closest to the end)
+        # of the first pattern that fires wins.  "Last match" avoids picking
+        # up intermediate steps that happen to share the same phrasing.
+
         final_patterns = [
-            r"(?:final\s+answer(?:\s+is)?|the\s+answer\s+is|answer\s*:|therefore,?\s+the\s+answer\s+is)\s*[:=]?\s*\$?\s*([\-]?\d[\d,]*(?:\.\d+)?)",
+            # 1. Explicit "the answer is X" phrasing — most reliable
+            r"(?:final\s+answer(?:\s+is)?|the\s+answer\s+is|answer\s*:|"
+            r"therefore,?\s+the\s+answer\s+is)\s*[:=]?\s*\$?\s*"
+            r"([\-]?\d[\d,]*(?:\.\d+)?)",
+
+            # 2. GSM-style gold answer marker
             r"####\s*([\-]?\d[\d,]*(?:\.\d+)?)",
+
+            # 3. LaTeX \boxed{} — common in Qwen / Phi outputs
+            r"\\boxed\{\s*([\-]?\d[\d,]*(?:\.\d+)?)\s*\}",
+
+            # 4. Dollar-sign amount at end of sentence / line (e.g. "costs $720.")
+            r"\$\s*([\-]?\d[\d,]*(?:\.\d+)?)\s*[.\n]?\s*$",
+
+            # 5. "= X" at very end of output (last equation result)
+            r"=\s*([\-]?\d[\d,]*(?:\.\d+)?)\s*[.\n]?\s*$",
         ]
         for pattern in final_patterns:
-            matches = re.findall(pattern, raw, flags=re.IGNORECASE)
+            matches = re.findall(pattern, raw, flags=re.IGNORECASE | re.MULTILINE)
             if matches:
                 return matches[-1].replace(",", "").strip().rstrip(".")
-        # Fallback: last number in the response.
+
+        # Fallback: last standalone number in the response.
+        # This handles models that just write the answer as the final word.
         nums = re.findall(r"[\-]?\d+(?:,\d{3})*(?:\.\d+)?", raw)
         if nums:
             return nums[-1].replace(",", "").strip().rstrip(".")

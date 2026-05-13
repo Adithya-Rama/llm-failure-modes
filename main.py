@@ -66,7 +66,16 @@ drive.mount('/content/drive', force_remount=False)
 # ─── EDIT THIS ────────────────────────────────────────────────────────────────
 GITHUB_REPO   = "https://github.com/Adithya-Rama/llm-failure-modes.git"  # <-- your repo
 DRIVE_ROOT    = "/content/drive/MyDrive/COMP6242 - Deep Learning/Project/llm-failure-modes"
-HF_TOKEN      = userdata.get('HF_TOKEN')   # Set in Colab Secrets (key icon in sidebar)
+
+# Safely fetch HF_TOKEN — only needed for gated models (Llama, Gemma).
+# Member 1 (Qwen-only) does not need this; userdata.get() raises if the
+# secret isn't configured, so we wrap it.
+try:
+    HF_TOKEN = userdata.get('HF_TOKEN')
+except Exception:
+    HF_TOKEN = None
+    print("ℹ HF_TOKEN not set in Colab Secrets — fine for no-auth models "
+          "(qwen-*, phi-3.5). Required for Llama/Gemma.")
 # ──────────────────────────────────────────────────────────────────────────────
 
 os.makedirs(DRIVE_ROOT, exist_ok=True)
@@ -131,85 +140,123 @@ print("✓ All imports successful")
 Edit this cell to control what runs. Start small, scale up.
 """
 
-# -----------------------------------------------------------------------------
-# EDIT THIS CELL to control the experiment scope.
+# =============================================================================
+# CONFIGURE YOUR RUN — EDIT ONLY THIS BLOCK
+# =============================================================================
 #
-# RUN_PROFILE options:
-#   "smoke"  — 10 items, qwen-3b only, fast sanity check (< 5 min)
-#   "main"   — 100 items, 7 models, 5 datasets, 4 strategies (~55-60 GPU hrs)
+# Step 1 — choose your profile:
+#   "smoke"  → 10 items, qwen-3b only, sanity check (< 5 min)
+#   "main"   → full 9 × 7 × 7 grid, 100 items/dataset
 #
-# With 220 Colab Pro credits on A100 (~73 GPU-hrs budget) "main" fits
-# comfortably.  Run one model per Colab session; checkpointing resumes safely.
+# Step 2 — set your team member number (1, 2, or 3):
+#   Member 1: Qwen family  (qwen-1.5b, qwen-3b, qwen-7b)   — NO auth needed
+#   Member 2: Llama family (llama-1b,  llama-3b, llama-8b) — needs HF_TOKEN
+#   Member 3: Phi + Gemma  (gemma-2b,  phi-3.5,  gemma-9b) — needs HF_TOKEN
 #
-# Auth-gated models (llama-*, gemma-*) need HF_TOKEN in Colab Secrets.
-# No-auth models (qwen-*, phi-3.5) run without a token.
-# -----------------------------------------------------------------------------
+# Estimated GPU-hours per member (Colab A100, 100 items/dataset):
+#   Member 1: ~34 hrs  ≈  102 Colab credits
+#   Member 2: ~39 hrs  ≈  117 Colab credits
+#   Member 3: ~47 hrs  ≈  141 Colab credits   ← gemma-9b is the slow one
+#   (Each member has ~220 credits — all fit with margin for reruns)
+#
+# Step 3 — if you need HF-gated models, set HF_TOKEN in Colab Secrets.
+# =============================================================================
 
-RUN_PROFILE = "main"   # ← change to "smoke" to sanity-check code only
+RUN_PROFILE = "main"   # "smoke" or "main"
+RUN_MEMBER  = 1        # ← SET THIS TO YOUR MEMBER NUMBER: 1, 2, or 3
 
-# ── 7-model scope ─────────────────────────────────────────────────────────────
-# Covers 3 size tiers (1-2B, 3B, 7-8B) and 3 families (Qwen, Llama, Phi).
-# Gemma excluded: needs auth AND llama covers the same tiers.
-MAIN_MODELS = [
-    # 1-2B tier
-    "qwen-1.5b",    # no auth
-    "llama-1b",     # needs HF_TOKEN
-    # 3B tier (family comparison — all ~3B but different training)
-    "qwen-3b",      # no auth — primary model
-    "phi-3.5",      # no auth — math-focused (tests H6)
-    "llama-3b",     # needs HF_TOKEN
-    # 7-9B tier
-    "qwen-7b",      # no auth
-    "llama-8b",     # needs HF_TOKEN
+# ── Full 9-model registry, split by member ────────────────────────────────────
+MEMBER_MODELS = {
+    # Qwen family: public weights, no HF token needed.
+    # Gives a clean within-family scaling curve (1.5B → 3B → 7B).
+    1: ["qwen-1.5b",  "qwen-3b",   "qwen-7b"],
+
+    # Llama family: gated weights — needs HF_TOKEN in Colab Secrets.
+    # Meta-Llama is the dominant open-source family; provides cross-family comparison.
+    2: ["llama-1b",   "llama-3b",  "llama-8b"],
+
+    # Phi-3.5 + Gemma: mixed families, mostly gated.
+    # Phi-3.5 is math-optimised (tests whether domain tuning reduces E1).
+    # Gemma-2 covers the remaining size tiers with a third family.
+    3: ["gemma-2b",   "phi-3.5",   "gemma-9b"],
+}
+
+# ── 7 datasets (full scope) ───────────────────────────────────────────────────
+FULL_DATASETS = [
+    "gsm8k",                 # easy  | clean arithmetic       → E1 baseline
+    "gsm_ic",                # easy  | distractor context     → E2 target
+    "gsm_symbolic",          # easy  | GSM perturbation       → robustness pair
+    "gsm_plus",              # easy  | harder GSM variants    → extra robustness
+    "bbh_logical_deduction", # medium| logical deduction      → E3 / E7
+    "bbh_tracking",          # medium| object tracking        → E3 / E4
+    "folio",                 # hard  | formal first-order logic → E5 / E7
 ]
 
-# ── 5 datasets ────────────────────────────────────────────────────────────────
-MAIN_DATASETS = [
-    "gsm8k",                 # easy / clean arithmetic (E1 baseline)
-    "gsm_ic",                # easy / distractor capture (E2)
-    "gsm_symbolic",          # easy / perturbation robustness (paired with gsm8k)
-    "bbh_logical_deduction", # medium / logical deduction (E3/E7)
-    "folio",                 # hard / formal FOL (E5/E7)
-]
+# ── 7 strategies (full scope) ─────────────────────────────────────────────────
+# S0 → S1 → S2 → S3 → S4 → S5 (novel) → S6 (self-consistency, 5× cost)
+# Run S0 first, error-code, then proceed to S1–S6.
+FULL_STRATEGIES = ["S0", "S1", "S2", "S3", "S4", "S5", "S6"]
 
-# ── 4 main strategies ─────────────────────────────────────────────────────────
-MAIN_STRATEGIES = ["S0", "S1", "S3", "S5"]
+# All 9 models run the full strategy grid; each member handles their 3 models.
+RUN_PHASE2_MODELS = MEMBER_MODELS[1] + MEMBER_MODELS[2] + MEMBER_MODELS[3]
 
-# Phase 2 (S1/S3/S5) runs on all 7 models.  One model per Colab session.
-RUN_PHASE2_MODELS = MAIN_MODELS[:]
+# ── S5 ablations (run on qwen-3b after main grid, 50 items) ──────────────────
+OPTIONAL_ABLATION_MODEL      = "qwen-3b"
+OPTIONAL_ABLATION_DATASETS   = ["gsm8k", "gsm_ic", "folio"]
+OPTIONAL_ABLATION_STRATEGIES = ["S5_RANDOM", "S5_CORRECT_ONLY"]
+OPTIONAL_ABLATION_SAMPLES    = 50
 
-# ── Ablations (run after main grid, on qwen-3b only, 50 items) ────────────────
-OPTIONAL_ABLATION_MODEL    = "qwen-3b"
-OPTIONAL_ABLATION_DATASETS = ["gsm8k", "gsm_ic"]
-OPTIONAL_ABLATION_STRATEGIES = ["S5_RANDOM", "S5_CORRECT_ONLY", "S6"]
-OPTIONAL_ABLATION_SAMPLES  = 50
-
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Derived active configuration — do not edit below this line
+# =============================================================================
 if RUN_PROFILE == "smoke":
     ACTIVE_MODELS     = ["qwen-3b"]
     ACTIVE_DATASETS   = ["gsm8k", "gsm_ic", "folio"]
     ACTIVE_STRATEGIES = ["S0", "S1", "S5"]
     N_SAMPLES         = 10
 elif RUN_PROFILE == "main":
-    ACTIVE_MODELS     = MAIN_MODELS
-    ACTIVE_DATASETS   = MAIN_DATASETS
-    ACTIVE_STRATEGIES = MAIN_STRATEGIES
+    ACTIVE_MODELS     = MEMBER_MODELS[RUN_MEMBER]
+    ACTIVE_DATASETS   = FULL_DATASETS
+    ACTIVE_STRATEGIES = FULL_STRATEGIES
     N_SAMPLES         = 100
 else:
     raise ValueError("RUN_PROFILE must be 'smoke' or 'main'")
 
-CHECKPOINT_EVERY = 50   # save every N items (safe for Colab disconnects)
+CHECKPOINT_EVERY = 50   # saves every N items — safe for Colab disconnects
 SEED             = 42
-USE_QUANT        = True  # NF4 4-bit for 3B+ models on Colab GPU
+USE_QUANT        = True  # NF4 4-bit quantisation for 3B+ models
 
-print("Run profile:      ", RUN_PROFILE)
-print("Active models:    ", ACTIVE_MODELS)
-print("Active datasets:  ", ACTIVE_DATASETS)
-print("Active strategies:", ACTIVE_STRATEGIES)
-print("Phase-2 models:   ", RUN_PHASE2_MODELS)
-print("N samples/dataset:", N_SAMPLES)
-print("Optional ablation:", OPTIONAL_ABLATION_MODEL,
-      OPTIONAL_ABLATION_DATASETS, OPTIONAL_ABLATION_STRATEGIES)
+# ── Per-session single-model control ──────────────────────────────────────────
+# Each Colab session should run EXACTLY ONE model at a time.
+# Set CURRENT_MODEL to a model key (e.g. "qwen-3b") to run only that model.
+# Set to None to run all ACTIVE_MODELS sequentially (only for smoke tests).
+#
+# Recommended workflow:
+#   Session 1: CURRENT_MODEL = "qwen-3b"    → run S0 baseline + all ICL strategies
+#   Session 2: CURRENT_MODEL = "qwen-1.5b"  → next day / after session ends
+#   Session 3: CURRENT_MODEL = "qwen-7b"    → etc.
+#
+# Checkpointing means sessions can be interrupted and resumed any time.
+CURRENT_MODEL = None   # ← SET THIS: e.g. "qwen-3b" | None = run all active
+
+if CURRENT_MODEL is not None:
+    assert CURRENT_MODEL in ACTIVE_MODELS, \
+        f"CURRENT_MODEL '{CURRENT_MODEL}' not in ACTIVE_MODELS: {ACTIVE_MODELS}"
+    SESSION_MODELS = [CURRENT_MODEL]
+else:
+    SESSION_MODELS = ACTIVE_MODELS  # run all (fine for smoke, risky for main)
+
+print(f"{'='*60}")
+print(f"  RUN_PROFILE  : {RUN_PROFILE}")
+print(f"  RUN_MEMBER   : {RUN_MEMBER}")
+print(f"  Session model: {SESSION_MODELS}")
+print(f"  Datasets     : {ACTIVE_DATASETS}")
+print(f"  Strategies   : {ACTIVE_STRATEGIES}")
+print(f"  N samples    : {N_SAMPLES}/dataset")
+print(f"  Combos (this session): "
+      f"{len(SESSION_MODELS)} × {len(ACTIVE_DATASETS)} × {len(ACTIVE_STRATEGIES)}"
+      f" = {len(SESSION_MODELS)*len(ACTIVE_DATASETS)*len(ACTIVE_STRATEGIES)}")
+print(f"{'='*60}")
 
 """## 4. Load Datasets"""
 
@@ -249,6 +296,64 @@ for dk, records in datasets.items():
     print(f"Dataset: {dk} | Tier: {cfg['tier']} | N: {len(records)}")
     print(f"  Q: {records[0]['question'][:150]}...")
     print(f"  A: {records[0]['gold_answer']}")
+
+"""## 4.5 Sanity Check — Validate Parser & Prompts Before Running
+
+**Always run this before starting a new model run.**
+Generates 3 items through the model for each key strategy and prints:
+- The exact prompt sent to the model
+- The raw model output
+- The extracted answer vs. the gold answer
+
+If pred_answer is None or wrong for obvious items, stop and debug here.
+"""
+
+def sanity_check(model_key: str, n_items: int = 3):
+    """
+    Quick smoke test: load model, run n_items through S0, S1, S5 on gsm8k,
+    print raw output + extracted answer for each.  Does NOT save checkpoints.
+    """
+    from src.models import load_model as _lm, format_prompt, generate_response, unload_model as _ul
+    from src.prompts import build_prompt
+    from src.data_loader import extract_model_answer
+    from src.config import DATASETS as DCFG, ICL_STRATEGIES
+
+    test_dk   = "gsm8k" if "gsm8k" in datasets else list(datasets.keys())[0]
+    test_recs = datasets[test_dk][:n_items]
+    answer_type = DCFG[test_dk]["answer_type"]
+
+    print(f"\n{'='*60}")
+    print(f"SANITY CHECK | model={model_key} | dataset={test_dk} | n={n_items}")
+    print(f"{'='*60}")
+
+    model, tokenizer, model_cfg = _lm(model_key, use_quantisation=USE_QUANT,
+                                       hf_token=HF_TOKEN, cache_dir=CACHE_DIR)
+    family = model_cfg["family"]
+
+    for strat in ["S0", "S1", "S3"]:
+        if strat not in ACTIVE_STRATEGIES:
+            continue
+        print(f"\n── Strategy: {strat} ──")
+        for rec in test_recs:
+            msgs = build_prompt(rec, strat, answer_type, seed=SEED)
+            prompt_text = format_prompt(msgs, tokenizer, family)
+            max_tok = 512 if strat != "S0" else 256
+            raw = generate_response(model, tokenizer, prompt_text,
+                                    max_new_tokens=max_tok, do_sample=False)[0]
+            pred = extract_model_answer(raw, answer_type)
+            ok   = "✓" if str(pred) == str(rec["gold_answer"]) else "✗"
+            print(f"  {ok} gold={rec['gold_answer']} | pred={pred}")
+            print(f"     raw (last 200 chars): ...{raw[-200:]!r}")
+
+    _ul(model, tokenizer)
+    print("\n✓ Sanity check complete — review pred vs gold above.")
+    print("  If pred=None for most items: answer parser is broken (check raw output format).")
+    print("  If pred≠gold for easy items: model load may have failed, or prompt is wrong.")
+
+# ── Run sanity check on the first session model before the main loop ──────────
+# Comment this out after confirming results are correct.
+if SESSION_MODELS:
+    sanity_check(SESSION_MODELS[0])
 
 """## 5. Check Existing Checkpoints
 This shows what's already been computed. Runs resume automatically.
@@ -291,25 +396,25 @@ else:
 
 """## 6. Run Experiments
 
-**Strategy:**
-1. Run S0 (zero-shot baseline) first on ALL models — this provides error classes for S5.
-2. Code errors from S0 results.
-3. Run S1–S6 (including S5 with error-class-targeted exemplars).
+**Workflow per Colab session:**
+1. Set `CURRENT_MODEL` to the model you want to run this session.
+2. Run S0 first (provides error classes for S5).
+3. Run S1–S6 with the error classes.
+4. Disconnect. Next session: change `CURRENT_MODEL`, repeat.
 
-> **Tip:** Run one model at a time. Each model takes ~30–90 min on Colab A100.
-> Checkpoints save every N items, so disconnects are safe.
-
+Checkpoints accumulate in Drive. The metrics cell can aggregate all 9 models
+at any point, even if only some sessions have finished.
 """
 
 # ─────────────────────────────────────────────────────────────────
-# PHASE 1: Baseline (S0 zero-shot) — run on all models first
+# PHASE 1: S0 baseline — only for models in this session
 # ─────────────────────────────────────────────────────────────────
 from src.taxonomy import code_batch, build_error_class_map
 from src.config import DATASETS as DATASET_CFGS
 
 baseline_error_maps = {}   # {model_key → {dataset_key → {id → error_class}}}
 
-for model_key in ACTIVE_MODELS:
+for model_key in SESSION_MODELS:
     print(f"\n{'='*60}")
     print(f"MODEL: {model_key} | STRATEGY: S0 (baseline)")
     print(f"{'='*60}")
@@ -367,10 +472,10 @@ for model_key in ACTIVE_MODELS:
 print("\n✓ Phase 1 (S0 baseline + error coding) complete")
 
 # ─────────────────────────────────────────────────────────────────
-# PHASE 2: Active ICL strategies
+# PHASE 2: ICL strategies — only this session's model(s)
 # ─────────────────────────────────────────────────────────────────
 ICL_ONLY = [s for s in ACTIVE_STRATEGIES if s != "S0"]
-PHASE2_MODELS = [m for m in RUN_PHASE2_MODELS if m in ACTIVE_MODELS]
+PHASE2_MODELS = [m for m in SESSION_MODELS if m in RUN_PHASE2_MODELS]
 
 for model_key in PHASE2_MODELS:
     print(f"\n{'='*60}")
@@ -410,9 +515,11 @@ from src.checkpointing import load_checkpoint
 from src.taxonomy import sample_for_annotation, export_annotation_csv, compute_kappa
 from src.config import DATASETS as DATASET_CFGS
 
-# Collect a sample of S0 failures across all models for annotation
+# Collect a sample of S0 failures from THIS member's models for annotation.
+# Each member should annotate their own ~150 items independently to enable
+# cross-annotator agreement (Cohen's κ across the 3 members).
 all_s0_failures = []
-for model_key in ACTIVE_MODELS[:3]:  # Use first 3 models for annotation sample
+for model_key in SESSION_MODELS:   # this member's models only
     for dk in ACTIVE_DATASETS_LOADED:
         ckpt = get_checkpoint_path(CHECKPOINT_DIR, model_key, "S0", dk)
         results, _ = load_checkpoint(ckpt)
@@ -442,10 +549,24 @@ print("  → Fill in the 'human_label' column and re-upload to Drive")
 #     elif kappa >= 0.6: print("  → Substantial agreement")
 #     else: print("  → Moderate agreement — review taxonomy")
 
-"""## 8. Compute All Metrics"""
+"""## 8. Compute All Metrics
+
+After all 3 members have synced their checkpoints to the shared Drive folder,
+this cell aggregates metrics across all 9 models.
+
+If only some members have finished, metrics will reflect what's available —
+no errors, but the heatmap will have empty rows for missing models.
+"""
 
 from src.checkpointing import load_all_checkpoints, filter_all_results_to_records
 from src.metrics import full_metrics_report, save_metrics
+
+# ── Aggregation scope ─────────────────────────────────────────────────────────
+# To produce the FINAL paper figures, we want metrics across ALL 9 models —
+# not just this member's 3.  Read whatever checkpoints exist in Drive.
+ALL_MODELS_FOR_REPORT = (
+    MEMBER_MODELS[1] + MEMBER_MODELS[2] + MEMBER_MODELS[3]
+)
 
 # Load all completed results from checkpoints
 print("Loading all results from checkpoints...")
@@ -454,7 +575,9 @@ all_results = load_all_checkpoints(CHECKPOINT_DIR)
 # Restrict analysis to the currently loaded N_SAMPLES subset when old checkpoints are larger.
 all_results = filter_all_results_to_records(all_results, datasets)
 
-# Quick status
+# Quick status: which models actually have data?
+present_models = sorted(all_results.keys())
+missing_models = [m for m in ALL_MODELS_FOR_REPORT if m not in present_models]
 total = sum(
     len(v)
     for m in all_results.values()
@@ -462,11 +585,14 @@ total = sum(
     for v in s.values()
 )
 print(f"✓ {total} total results loaded")
+print(f"✓ Models present in checkpoints: {present_models}")
+if missing_models:
+    print(f"⚠ Missing models (not yet run by their member): {missing_models}")
 
-# Compute metrics
+# Compute metrics across ALL 9 models (missing ones contribute NaN, no error)
 metrics = full_metrics_report(
     all_results,
-    model_keys=ACTIVE_MODELS,
+    model_keys=ALL_MODELS_FOR_REPORT,
     strategy_keys=ACTIVE_STRATEGIES,
     dataset_keys=ACTIVE_DATASETS_LOADED,
     model_configs=MODELS,
@@ -521,7 +647,7 @@ plot_robustness_ratios(metrics["robustness"], figures_dir=FIGURES_DIR)
 # Fig 6: JS divergence
 print("Generating Fig 6: JS Divergence...")
 plot_js_divergence(
-    all_results, ACTIVE_MODELS, ACTIVE_STRATEGIES,
+    all_results, ALL_MODELS_FOR_REPORT, ACTIVE_STRATEGIES,
     ACTIVE_DATASETS_LOADED, MODELS, figures_dir=FIGURES_DIR,
 )
 

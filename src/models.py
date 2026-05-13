@@ -222,25 +222,36 @@ def generate_response(
     do_sample: bool = False,
     temperature: float = 1.0,
     top_p: float = 1.0,
-    repetition_penalty: float = 1.1,
+    repetition_penalty: float = 1.0,   # 1.0 = disabled; >1.0 hurts Llama-3.x quality
     n_return: int = 1,
 ) -> list:
     """
     Generate n_return responses for a single prompt.
     Returns list of decoded strings (length = n_return).
     """
+    # NOTE: 2048 was too small — S3/S4/S5 with 5 CoT exemplars + a long
+    # FOLIO problem can exceed 2500 tokens, silently truncating the actual
+    # question. 4096 covers all combinations in our 9×7×7 grid.
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True,
-                       max_length=2048).to(model.device)
+                       max_length=4096).to(model.device)
     input_len = inputs["input_ids"].shape[-1]
+    if input_len >= 4096:
+        logger.warning(
+            f"Input length hit 4096 token limit — prompt may have been truncated. "
+            f"Consider reducing few-shot exemplars or shortening the question."
+        )
 
     gen_kwargs = dict(
         max_new_tokens=max_new_tokens,
         do_sample=do_sample or (n_return > 1),
-        repetition_penalty=repetition_penalty,
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
         num_return_sequences=n_return,
     )
+    # Only apply repetition_penalty if explicitly > 1.0 — otherwise it
+    # degrades greedy decoding for Llama-3.x and Qwen.
+    if repetition_penalty and repetition_penalty > 1.0:
+        gen_kwargs["repetition_penalty"] = repetition_penalty
     if do_sample or n_return > 1:
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = top_p

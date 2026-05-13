@@ -76,10 +76,16 @@ def run_single(
     answer_type = dataset_cfg.get("answer_type", "numeric")
     family = model_cfg["family"]
     max_new_tokens = model_cfg.get("max_new_tokens", 512)
+
+    # CoT strategies produce much longer outputs than zero-shot.
+    # Few-shot exemplars also add to the context, pushing the answer further
+    # into the response.  Ensure enough room for the final answer line.
+    COT_STRATEGIES = {"S1", "S3", "S4", "S5", "S5_RANDOM", "S5_CORRECT_ONLY", "S6"}
+    if strategy_key in COT_STRATEGIES:
+        max_new_tokens = max(max_new_tokens, 512)
     if answer_type == "trivalent":
-        # FOLIO-style prompts are long, especially under few-shot CoT. A 256
-        # token cap often truncates before the True/False/Unknown verdict.
-        max_new_tokens = max(max_new_tokens, 384)
+        # FOLIO reasoning chains can be very long; bump further.
+        max_new_tokens = max(max_new_tokens, 640)
 
     strategy = ICL_STRATEGIES[strategy_key]
 
